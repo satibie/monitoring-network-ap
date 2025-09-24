@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Monitoring Access Point - Topologi dengan Ikon</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background: #f5f5f5; }
+    .floorplan {
+      position: relative;
+      width: 1000px;
+      height: 700px;
+      margin: 20px auto;
+      border: 2px solid #ccc;
+      background: #fff;
+    }
+    .device {
+      position: absolute;
+      text-align: center;
+      width: 100px;
+      cursor: default;
+    }
+    .device svg { width: 60px; height: 60px; }
+    .online svg { filter: drop-shadow(0 0 5px lime); }
+    .offline svg { filter: drop-shadow(0 0 5px red) grayscale(1); }
+    .status { font-weight: bold; font-size: 12px; }
+    .label { font-size: 13px; }
+    #connections {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+    }
+    .online-link {
+      stroke: green;
+      stroke-width: 3;
+      stroke-dasharray: 10;
+      animation: flow 1s linear infinite;
+    }
+    @keyframes flow { to { stroke-dashoffset: -20; } }
+    .offline-link { stroke: red; stroke-width: 3; }
+    .blink { animation: blinkAnim 1s infinite; }
+    @keyframes blinkAnim { 50% { opacity: 0; } }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h2 class="text-center my-3">Monitoring Topologi Jaringan RSIA AL-ISLAM</h2>
+  
+  <div id="last-update" class="text-end text-muted small">Terakhir update: -</div>
+
+<!-- tombol suara -->
+<button id="toggle-sound" class="btn btn-secondary">
+  🔇 Suara Mati
+</button>
+
+
+  <div class="floorplan" id="floorplan">
+    <svg id="connections"></svg>
+  </div>
+</div>
+  
+<!-- Tambah audio di sini -->
+<audio id="beep-audio" src="/static/beep_triple.mp3" preload="auto"></audio>
+
+<script>
+  const floorplan = document.getElementById("floorplan");
+  const connections = document.getElementById("connections");
+  let lastStatus = {};
+  const beepAudio = document.getElementById("beep-audio");
+  const btnSound = document.getElementById("toggle-sound");
+  let soundEnabled = false; // default: suara mati
+  // even button sound
+  btnSound.addEventListener("click", () => {
+    if (!soundEnabled) {
+      // Aktifkan suara (butuh interaksi user pertama kali)
+      beepAudio.play().then(() => {
+        beepAudio.pause();
+        beepAudio.currentTime = 0;
+        soundEnabled = true;
+        btnSound.className = "btn btn-success";
+        btnSound.textContent = "🔊 Suara Aktif";
+        console.log("Suara diaktifkan");
+      }).catch(err => console.log("Autoplay diblokir:", err));
+    } else {
+      // Matikan suara
+      soundEnabled = false;
+      btnSound.className = "btn btn-secondary";
+      btnSound.textContent = "🔇 Suara Mati";
+      console.log("Suara dimatikan");
+    }
+  });
+
+  // Fungsi untuk play beep ketika ada perangkat Offline
+  function playBeep() {
+    if (soundEnabled) {
+      beepAudio.currentTime = 0;
+      beepAudio.play().catch(err => console.log("Gagal play beep:", err));
+    }
+  }
+  
+  function latencyColor(ms) {
+    if (ms < 50) return "green";
+    if (ms < 150) return "orange";
+    return "red";
+  }
+  // Posisi perangkat
+  const positions = {
+    "192.168.70.1": {x: 450, y: 80},   // Mikrotik
+    "192.168.70.23": {x: 200, y: 250}, // Rawat Jalan Lt.3
+    "192.168.70.21": {x: 200, y: 430}, // Rawat Jalan Lt.2
+    "192.168.70.16": {x: 200, y: 600}, // Farmasi
+    "192.168.70.18": {x: 700, y: 430}, // R. Transit
+    "192.168.70.17": {x: 700, y: 250}, // R. Pertemuan
+    "192.168.70.244": {x: 700, y: 600},// Rawat Inap
+    "192.168.70.25": {x: 450, y: 600}  // IGD
+  };
+
+  // SVG ikon
+  function getIcon(ip) {
+    if (ip === "192.168.70.1") {
+      // Mikrotik
+      return `
+        <svg viewBox="0 0 64 64">
+          <rect x="10" y="25" width="44" height="20" rx="4" fill="#007bff"/>
+          <rect x="18" y="20" width="4" height="10" fill="#007bff"/>
+          <rect x="42" y="20" width="4" height="10" fill="#007bff"/>
+        </svg>`;
+    } else {
+      // Access Point
+      return `
+        <svg viewBox="0 0 64 64">
+          <circle cx="32" cy="32" r="10" fill="#007bff"/>
+          <path d="M12 32a20 20 0 0 1 40 0" fill="none" stroke="#007bff" stroke-width="3"/>
+          <path d="M20 32a12 12 0 0 1 24 0" fill="none" stroke="#007bff" stroke-width="3"/>
+        </svg>`;
+    }
+  }
+
+  async function fetchStatus() {
+    try {
+      let res = await fetch("/status");
+      let data = await res.json();
+
+      floorplan.querySelectorAll(".device").forEach(ap => ap.remove());
+      connections.innerHTML = "";
+
+      let mik = positions["192.168.70.1"];
+
+      for (const [ip, info] of Object.entries(data)) {
+        let pos = positions[ip] || {x: 100, y: 100};
+        let status = info.status;
+        let name = info.name;
+
+        // Kalau status berubah dari Online → Offline, play beep
+        if (lastStatus[ip] && lastStatus[ip] === "Online" && status === "Offline") {
+          playBeep();
+        }
+
+        // Box perangkat
+        let dev = document.createElement("div");
+        dev.className = "device " + (status === "Online" ? "online" : "offline");
+        dev.style.left = (pos.x - 50) + "px";
+        dev.style.top = (pos.y - 40) + "px";
+        let htmlContent = "";
+        if (name === "Mikrotik") {
+          htmlContent = `
+            <div class="label"><b>${name}</b></div>
+            ${getIcon(ip)}
+            <div class="status">${status}</div>
+            <div class="latency">
+              ${status === "Online" 
+                ? `<span style="color:${latencyColor(info.latency)}">${info.latency} ms</span>`
+                : `<span style="color:red">-</span>`}
+            </div>
+          `;
+        } else {
+          htmlContent = `
+            ${getIcon(ip)}
+            <div class="label"><b>${name}</b></div>
+            <div class="status">${status}</div>
+            <div class="latency">
+              ${status === "Online" 
+                ? `<span style="color:${latencyColor(info.latency)}">${info.latency} ms</span>`
+                : `<span style="color:red">-</span>`}
+            </div>
+          `;
+        }
+        dev.innerHTML = htmlContent;
+        
+        floorplan.appendChild(dev);
+
+        // Gambar garis dari Mikrotik ke perangkat lain
+        if (ip !== "192.168.70.1") {
+          let path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          path.setAttribute("d", `M ${mik.x} ${mik.y} L ${pos.x} ${pos.y}`);
+          if (status === "Online") {
+            path.setAttribute("class", "online-link");
+          } else {
+            path.setAttribute("class", "offline-link");
+            let midX = (mik.x + pos.x) / 2;
+            let midY = (mik.y + pos.y) / 2;
+            let text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            text.setAttribute("x", midX);
+            text.setAttribute("y", midY);
+            text.setAttribute("fill", "red");
+            text.setAttribute("font-size", "20");
+            text.setAttribute("text-anchor", "middle");
+            text.setAttribute("dy", ".3em");
+            text.textContent = "❌";
+            text.classList.add("blink");
+            connections.appendChild(text);
+          }
+          connections.appendChild(path);
+        }
+
+        lastStatus[ip] = status;
+      }
+
+      document.getElementById("last-update").textContent =
+        "Terakhir update: " + new Date().toLocaleString("id-ID");
+    } catch (e) {
+      console.error("Gagal ambil status:", e);
+    }
+  }
+
+  fetchStatus();
+  setInterval(fetchStatus, 5000);
+</script>
+</body>
+</html>
